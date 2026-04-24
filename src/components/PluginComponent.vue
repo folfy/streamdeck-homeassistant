@@ -200,6 +200,10 @@ function entityStateChanged(event) {
   }
 }
 
+function resolveState(entityId, incomingState) {
+  return entityId === incomingState.entity_id ? incomingState : latestStates.value[entityId]
+}
+
 function updateState(stateMessage) {
   if (!stateMessage.entity_id) {
     console.log(`Missing entity_id in updated state: ${stateMessage}`)
@@ -217,14 +221,10 @@ function updateState(stateMessage) {
   changedContexts.forEach((context) => {
     try {
       const contextDisplay = actionSettings.value[context].display
-      const primaryEntityId = contextDisplay.entityId
 
       // Resolve the primary state — use the incoming message if it is for the primary entity,
       // otherwise fall back to the cached state.
-      const primaryState =
-        primaryEntityId === stateMessage.entity_id
-          ? stateMessage
-          : latestStates.value[primaryEntityId]
+      const primaryState = resolveState(contextDisplay.entityId, stateMessage)
 
       if (!primaryState) {
         // Primary state not yet loaded; skip until a full state refresh arrives.
@@ -240,9 +240,8 @@ function updateState(stateMessage) {
           primaryState.last_changed
         ).toLocaleTimeString()
 
-      const additionalEntityIds = contextDisplay.additionalEntityIds || []
-      const additionalStates = additionalEntityIds
-        .map((id) => (id === stateMessage.entity_id ? stateMessage : latestStates.value[id]))
+      const additionalStates = (contextDisplay.additionalEntityIds || [])
+        .map((id) => resolveState(id, stateMessage))
         .filter(Boolean)
 
       const primaryDomain = primaryState.entity_id.split('.')[0]
@@ -261,9 +260,22 @@ function isEncoder(contextSettings) {
 
 function updateContextState(currentContext, domain, stateObject, additionalStates = []) {
   let contextSettings = actionSettings.value[currentContext]
+
+  // Build the entities array (entities[0] = primary, entities[1..N] = additional) and
+  // enrich stateObject.attributes so that all template rendering paths share the same context.
+  const entitiesContext = [stateObject, ...additionalStates].map((s) => ({
+    state: s.state,
+    entity_id: s.entity_id,
+    ...s.attributes
+  }))
+  const enrichedStateObject = {
+    ...stateObject,
+    attributes: { ...stateObject.attributes, entities: entitiesContext }
+  }
+
   let renderingConfig = entityConfigFactory.determineConfig(
     domain,
-    stateObject,
+    enrichedStateObject,
     contextSettings.display
   )
 
@@ -280,21 +292,12 @@ function updateContextState(currentContext, domain, stateObject, additionalState
     rotationPercent[currentContext] = renderingConfig.rotationPercent
   }
 
-  // Build a flat entities array for use in label/title templates:
-  //   entities[0] = primary entity, entities[1..N] = additional entities
-  const entitiesContext = [stateObject, ...additionalStates].map((s) => ({
-    state: s.state,
-    entity_id: s.entity_id,
-    ...s.attributes
-  }))
-
   if (contextSettings.display.useCustomTitle) {
-    let state = stateObject.state
-    let stateAttributes = stateObject.attributes
+    let state = enrichedStateObject.state
+    let stateAttributes = enrichedStateObject.attributes
     renderingConfig.customTitle = nunjucks.renderString(contextSettings.display.buttonTitle, {
       ...{ state },
-      ...stateAttributes,
-      entities: entitiesContext
+      ...stateAttributes
     })
   }
 
@@ -318,9 +321,8 @@ function updateContextState(currentContext, domain, stateObject, additionalState
     if (renderingConfig.feedback.value === undefined) {
       renderingConfig.feedback.value = svgUtils
         .renderTemplates(renderingConfig.labelTemplates, {
-          ...stateObject.attributes,
-          ...{ state: stateObject.state },
-          entities: entitiesContext
+          ...enrichedStateObject.attributes,
+          ...{ state: enrichedStateObject.state }
         })
         .join(' ')
     }
@@ -357,10 +359,6 @@ function updateContextState(currentContext, domain, stateObject, additionalState
           : entityConfigFactory.colors.neutral
     }
 
-    const enrichedStateObject = {
-      ...stateObject,
-      attributes: { ...stateObject.attributes, entities: entitiesContext }
-    }
     const buttonSVG = svgUtils.renderButtonSVG(renderingConfig, enrichedStateObject)
     setButtonSVG(buttonSVG, currentContext)
   }
