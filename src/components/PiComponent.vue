@@ -104,6 +104,43 @@
         v-model="entity"
       ></EntitySelection>
 
+      <div class="mb-3">
+        <label class="form-label">Additional entities</label>
+        <div
+          v-for="(additionalEntityId, index) in additionalEntityIds"
+          :key="index"
+          class="d-flex align-items-start mb-2"
+        >
+          <div class="flex-grow-1">
+            <EntitySelection
+              :available-entities="availableEntities"
+              :model-value="additionalEntityId"
+              @update:model-value="(val) => updateAdditionalEntity(index, val)"
+            ></EntitySelection>
+          </div>
+          <button
+            class="btn btn-sm btn-outline-danger ms-2 mt-4"
+            type="button"
+            @click="removeAdditionalEntity(index)"
+          >
+            ✕
+          </button>
+        </div>
+        <button
+          class="btn btn-sm btn-outline-secondary mt-1"
+          type="button"
+          @click="addAdditionalEntity"
+        >
+          + Add entity
+        </button>
+        <div class="form-text mt-1">
+          Additional entities are accessible in label/title templates as
+          <span class="font-monospace">&#123;&#123;entities[1].state&#125;&#125;</span>,
+          <span class="font-monospace">&#123;&#123;entities[2].state&#125;&#125;</span>, etc.
+          (<span class="font-monospace">entities[0]</span> is the primary entity).
+        </div>
+      </div>
+
       <div class="form-check form-switch">
         <input
           id="chkButtonTitle"
@@ -349,6 +386,7 @@ const displayConfiguration = ref()
 const displayConfigurationUrlOverride = ref('')
 
 const entity = ref('')
+const additionalEntityIds = ref([])
 
 const serviceShortPress = ref({})
 const serviceLongPress = ref({})
@@ -419,6 +457,7 @@ onMounted(() => {
       let settings = Settings.parse(actionInfo.payload.settings)
 
       entity.value = settings['display']['entityId']
+      additionalEntityIds.value = settings['display']['additionalEntityIds'] || []
       enableServiceIndicator.value =
         settings['display']['enableServiceIndicator'] ||
         settings['display']['enableServiceIndicator'] === undefined
@@ -530,6 +569,18 @@ function connectHomeAssistant() {
   }
 }
 
+function addAdditionalEntity() {
+  additionalEntityIds.value.push('')
+}
+
+function removeAdditionalEntity(index) {
+  additionalEntityIds.value.splice(index, 1)
+}
+
+function updateAdditionalEntity(index, val) {
+  additionalEntityIds.value[index] = val
+}
+
 function saveGlobalSettings() {
   haError.value = ''
 
@@ -556,12 +607,13 @@ function saveGlobalSettings() {
 
 function saveSettings() {
   let settings = {
-    version: 5,
+    version: 6,
 
     controllerType: controllerType.value,
 
     display: {
       entityId: entity.value,
+      additionalEntityIds: additionalEntityIds.value,
       useCustomTitle: useCustomTitle.value,
       buttonTitle: buttonTitle.value,
       enableServiceIndicator: enableServiceIndicator.value,

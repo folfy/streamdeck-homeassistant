@@ -119,6 +119,14 @@ export class Settings {
     }
 
     if (settings.version === 5) {
+      let settingsV6 = { ...settings }
+      settingsV6.version = 6
+      settingsV6.display = { ...settings.display }
+      settingsV6.display.additionalEntityIds = settingsV6.display.additionalEntityIds || []
+      return this.parse(settingsV6)
+    }
+
+    if (settings.version === 6) {
       return settings
     }
   }

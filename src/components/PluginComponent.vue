@@ -23,6 +23,7 @@ const $reconnectTimeout = ref({})
 const globalSettings = ref({})
 const actionSettings = ref([])
 const buttonLongpressTimeouts = ref(new Map()) //context, timeout
+const latestStates = ref({}) // entityId -> stateMessage
 
 const activeStates = ref(defaultActiveStates)
 
@@ -184,13 +185,17 @@ function showAlert() {
   Object.keys(actionSettings.value).forEach((key) => $SD.value.showAlert(key))
 }
 
-function entityStatesChanged(event) {
-  event.forEach(updateState)
+function entityStatesChanged(states) {
+  states.forEach((state) => {
+    latestStates.value[state.entity_id] = state
+  })
+  states.forEach(updateState)
 }
 
 function entityStateChanged(event) {
   if (event) {
     let newState = event.data.new_state
+    latestStates.value[newState.entity_id] = newState
     updateState(newState)
   }
 }
@@ -201,23 +206,47 @@ function updateState(stateMessage) {
     return
   }
 
-  let domain = stateMessage.entity_id.split('.')[0]
-  let changedContexts = Object.keys(actionSettings.value).filter(
-    (key) => actionSettings.value[key].display.entityId === stateMessage.entity_id
-  )
+  let changedContexts = Object.keys(actionSettings.value).filter((key) => {
+    const display = actionSettings.value[key].display
+    return (
+      display.entityId === stateMessage.entity_id ||
+      (display.additionalEntityIds || []).includes(stateMessage.entity_id)
+    )
+  })
 
   changedContexts.forEach((context) => {
     try {
-      if (stateMessage.last_updated != null)
-        stateMessage.attributes['last_updated'] = new Date(
-          stateMessage.last_updated
+      const contextDisplay = actionSettings.value[context].display
+      const primaryEntityId = contextDisplay.entityId
+
+      // Resolve the primary state — use the incoming message if it is for the primary entity,
+      // otherwise fall back to the cached state.
+      const primaryState =
+        primaryEntityId === stateMessage.entity_id
+          ? stateMessage
+          : latestStates.value[primaryEntityId]
+
+      if (!primaryState) {
+        // Primary state not yet loaded; skip until a full state refresh arrives.
+        return
+      }
+
+      if (primaryState.last_updated != null)
+        primaryState.attributes['last_updated'] = new Date(
+          primaryState.last_updated
         ).toLocaleTimeString()
-      if (stateMessage.last_changed != null)
-        stateMessage.attributes['last_changed'] = new Date(
-          stateMessage.last_changed
+      if (primaryState.last_changed != null)
+        primaryState.attributes['last_changed'] = new Date(
+          primaryState.last_changed
         ).toLocaleTimeString()
 
-      updateContextState(context, domain, stateMessage)
+      const additionalEntityIds = contextDisplay.additionalEntityIds || []
+      const additionalStates = additionalEntityIds
+        .map((id) => (id === stateMessage.entity_id ? stateMessage : latestStates.value[id]))
+        .filter(Boolean)
+
+      const primaryDomain = primaryState.entity_id.split('.')[0]
+      updateContextState(context, primaryDomain, primaryState, additionalStates)
     } catch (e) {
       console.error(e)
       $SD.value.setImage(context, null)
@@ -230,7 +259,7 @@ function isEncoder(contextSettings) {
   return contextSettings.controllerType === 'Encoder'
 }
 
-function updateContextState(currentContext, domain, stateObject) {
+function updateContextState(currentContext, domain, stateObject, additionalStates = []) {
   let contextSettings = actionSettings.value[currentContext]
   let renderingConfig = entityConfigFactory.determineConfig(
     domain,
@@ -251,12 +280,21 @@ function updateContextState(currentContext, domain, stateObject) {
     rotationPercent[currentContext] = renderingConfig.rotationPercent
   }
 
+  // Build a flat entities array for use in label/title templates:
+  //   entities[0] = primary entity, entities[1..N] = additional entities
+  const entitiesContext = [stateObject, ...additionalStates].map((s) => ({
+    state: s.state,
+    entity_id: s.entity_id,
+    ...s.attributes
+  }))
+
   if (contextSettings.display.useCustomTitle) {
     let state = stateObject.state
     let stateAttributes = stateObject.attributes
     renderingConfig.customTitle = nunjucks.renderString(contextSettings.display.buttonTitle, {
       ...{ state },
-      ...stateAttributes
+      ...stateAttributes,
+      entities: entitiesContext
     })
   }
 
@@ -281,7 +319,8 @@ function updateContextState(currentContext, domain, stateObject) {
       renderingConfig.feedback.value = svgUtils
         .renderTemplates(renderingConfig.labelTemplates, {
           ...stateObject.attributes,
-          ...{ state: stateObject.state }
+          ...{ state: stateObject.state },
+          entities: entitiesContext
         })
         .join(' ')
     }
@@ -318,7 +357,11 @@ function updateContextState(currentContext, domain, stateObject) {
           : entityConfigFactory.colors.neutral
     }
 
-    const buttonSVG = svgUtils.renderButtonSVG(renderingConfig, stateObject)
+    const enrichedStateObject = {
+      ...stateObject,
+      attributes: { ...stateObject.attributes, entities: entitiesContext }
+    }
+    const buttonSVG = svgUtils.renderButtonSVG(renderingConfig, enrichedStateObject)
     setButtonSVG(buttonSVG, currentContext)
   }
 }
